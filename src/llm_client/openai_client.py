@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 import httpx
 import openai
@@ -27,6 +28,9 @@ class OpenAIClient(LLMRequest):
     ):
         self.http_client = httpx.AsyncClient(timeout=60)
         self.chat_completions_url = "https://api.openai.com/v1/chat/completions"
+        self.client = openai.AsyncOpenAI(
+            api_key=api_key,
+        )
         self.api_key = api_key
         self.model = config.model
         self.tools = config.tools
@@ -61,6 +65,7 @@ class OpenAIClient(LLMRequest):
             "max_tokens": 2048,
             "temperature": 0.8,
             "response_format": {"type": "text"},
+            "stream": True,
         }
 
         if self.tool_json and len(self.tool_json) > 0:
@@ -68,17 +73,71 @@ class OpenAIClient(LLMRequest):
             body["tool_choice"] = "auto"
 
         try:
-            response = await self.http_client.post(self.chat_completions_url, headers=self.headers, json=body)
+            # record the time before the request is sent
+            start_time = time.time()
+            # response = await self.http_client.post(self.chat_completions_url, headers=self.headers, json=body)
+            response = await self.client.chat.completions.create(
+                messages=[
+                    msg.model_dump(exclude={"tool_calls"})
+                    if hasattr(msg, "tool_calls") and not msg.tool_calls
+                    else msg.model_dump()
+                    for msg in messages
+                ],
+                model=self.model.model_id,
+                stream=True,
+                stream_options={"include_usage": True},
+                tool_choice="auto",
+                tools=self.tool_json,
+                # stream_options={"include_usage": True},
+            )
 
-            if response.status_code != 200:
-                logger.error(f"{_tag}send_completion_request error:\n{response.text}")
-                raise Exception(response.text)
+            # async for chunk in response:
+            #     # print(f"choices: {chunk.choices}")
+            #     print(f"chunk: {chunk}")
+            #     print("****************")
+            #     # if chunk.usage:
+            #     #     usage_dict = chunk.usage
+            #     #     print(f"usage: {usage_dict}")
 
-            response_data = response.json()
-            logger.debug(f"{_tag}send_completion_request response:\n{json.dumps(response_data, indent=2)}")
-            chat_completion = ChatCompletion(**response_data)
-            logger.info(f"send_completion_request usage: {chat_completion.usage.model_dump()}")
-            return chat_completion
+            collected_chunks = []
+            collected_messages = []
+            content = ""
+            tool_calls = []
+            async for chunk in response:
+                print(json.dumps(chunk.model_dump(), indent=2))
+                if chunk.choices:
+                    if not chunk.choices[0].finish_reason:
+                        word = chunk.choices[0].delta.content or ""
+                        content += word
+                        print(word, end="")  # your method
+                        if chunk.choices[0].delta.tool_calls and chunk.choices[0].delta.tool_calls[0].name:
+                            tool_calls.extend(chunk.choices[0].delta.tool_calls)
+                    else:
+                        finish_reason = chunk.choices[0].finish_reason
+                    chunk_time = time.time() - start_time  # calculate the time delay of the chunk
+                    collected_chunks.append(chunk)  # save the event response
+                    chunk_message = chunk.choices[0].delta.content  # extract the message
+                    collected_messages.append(chunk_message)  # save the message
+                    print(f"Message received {chunk_time:.2f} seconds after request: {chunk_message}")
+                # print(chunk.choices[0].delta.content or "", end="")
+
+            # if response.status_code != 200:
+            #     logger.error(f"{_tag}send_completion_request error:\n{response.text}")
+            #     raise Exception(response.text)
+
+            # response_data = response.json()
+            # logger.debug(f"{_tag}send_completion_request response:\n{json.dumps(response_data, indent=2)}")
+            # print the time delay and text received
+            print(f"inx Full response received {chunk_time:.2f} seconds after request")
+            # clean None in collected_messages
+            collected_messages = [m for m in collected_messages if m is not None]
+            full_reply_content = "".join(collected_messages)
+            print(f"inx full_reply_content received: {full_reply_content}")
+            print(f"inx content received: {content}")
+            print(f"inx tool_calls received: {tool_calls}")
+            # chat_completion = ChatCompletion(**response.model_dump())
+            # logger.info(f"send_completion_request usage: {chat_completion.usage.model_dump()}")
+            # return chat_completion
         except openai.APIConnectionError as e:
             return ErrorResponse(message=f"The server could not be reached. {e.__cause__}")
         except openai.RateLimitError as e:

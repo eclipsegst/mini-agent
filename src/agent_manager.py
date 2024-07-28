@@ -9,7 +9,8 @@ from schemas.agent import AgentConfig
 from schemas.error import ErrorResponse
 from schemas.request_metadata import Metadata
 from tools.tool_manager import Tool
-from utils.cli_utils import progress_indicator
+
+# from utils.cli_utils import progress_indicator
 from utils.logs import logger
 
 
@@ -74,8 +75,8 @@ class AgentManager:
     async def handle_input(self, user_input: str):
         if user_input:
             indicator = None
-            if self.is_test is False:
-                indicator = asyncio.create_task(progress_indicator())
+            # if self.is_test is False:
+            # indicator = asyncio.create_task(progress_indicator())
             try:
                 response = await self.agent.send_prompt(user_input)
                 if indicator:
